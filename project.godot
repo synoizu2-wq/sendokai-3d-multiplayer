@@ -1,11 +1,11 @@
-; Sendokai 3D Multiplayer Prototype
+; Sendokai 3D Offline Tournament
 config_version=5
 
 [application]
-config/name="Sendokai 3D Prototype"
+config/name="Sendokai 3D Offline Cup"
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
-config/description="An original fan-made 3D energy-ball arena prototype."
+config/description="An original fan-made offline 3D energy-ball tournament prototype."
 
 [display]
 window/size/viewport_width=1280
