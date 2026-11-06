@@ -37,6 +37,7 @@ func _ready() -> void:
 	_build_ball()
 	_build_fighters()
 	_build_hud()
+	final_opponent = TEAM_NAMES[randi_range(1, TEAM_NAMES.size() - 1)]
 	_start_match("SEMIFINAL • MATCH 1 OF 2", "Storm")
 
 func _physics_process(delta: float) -> void:
@@ -334,6 +335,7 @@ func _continue_tournament() -> void:
 		round_number = 1
 		tournament_over = false
 		player_won_semifinal = false
+		final_opponent = TEAM_NAMES[randi_range(1, TEAM_NAMES.size() - 1)]
 		_start_match("SEMIFINAL • MATCH 1 OF 2", "Storm")
 		return
 	if round_number == 1 and player_won_semifinal:
