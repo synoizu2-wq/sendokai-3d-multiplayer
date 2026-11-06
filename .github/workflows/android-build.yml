@@ -1,4 +1,4 @@
-name: Build Sendokai Android APK
+name: Build Sendokai Offline Cup APK
 
 on:
   workflow_dispatch:
@@ -19,12 +19,12 @@ jobs:
             -v "$PWD":/project \
             -w /project \
             barichello/godot-ci:4.4.1 \
-            godot --headless --path . --export-debug Android build/Sendokai3DPrototype.apk
+            godot --headless --path . --export-debug Android build/Sendokai3DOfflineCup.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Sendokai3DPrototype-Android-APK
-          path: build/Sendokai3DPrototype.apk
+          name: Sendokai3DOfflineCup-Android-APK
+          path: build/Sendokai3DOfflineCup.apk
           if-no-files-found: error
           retention-days: 14
