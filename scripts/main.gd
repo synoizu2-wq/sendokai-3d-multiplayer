@@ -37,6 +37,7 @@ var continue_button: Button
 
 func _ready() -> void:
 	randomize()
+	opponent_name = TEAM_NAMES[1]
 	_build_world()
 	_build_field()
 	_build_teams()
@@ -321,6 +322,13 @@ func _update_players(delta: float) -> void:
 		var carrier := players[owner_id]
 		ball_pos = carrier.position + Vector3(0, 0.5, -0.8 if int(player_data[owner_id]["team"]) == 0 else 0.8)
 		ball_vel = Vector3.ZERO
+		if int(player_data[owner_id]["team"]) == 1 and ai_shot_cooldown <= 0.0:
+			var enemy_goal := Vector3(0, 0, FIELD_Z / 2.0)
+			if carrier.position.distance_to(enemy_goal) < 34.0:
+				owner_id = -1
+				ball_vel = Vector3(randf_range(-2.5, 2.5), 2.0, 27.0)
+				ai_shot_cooldown = 2.0
+				hud_message.text = "THE OPPONENT SHOOTS!"
 	if int(player_data[selected_id]["team"]) == 1:
 		selected_id = _nearest_home_player()
 		_update_selection_visuals()
@@ -375,12 +383,13 @@ func _goal_scored(message: String) -> void:
 func _pass_ball() -> void:
 	if owner_id < 0 or int(player_data[owner_id]["team"]) != 0:
 		return
-	var target_id := _nearest_teammate(owner_id, false)
+	var passer_id := owner_id
+	var target_id := _nearest_teammate(passer_id, false)
 	if target_id >= 0:
-		owner_id = -1
-		var direction := players[target_id].position - players[owner_id].position
+		var direction := players[target_id].position - players[passer_id].position
 		direction.y = 0
-		ball_pos = players[owner_id].position + Vector3(0, 0.5, -0.8)
+		ball_pos = players[passer_id].position + Vector3(0, 0.5, -0.8)
+		owner_id = -1
 		ball_vel = direction.normalized() * 17.0
 		hud_message.text = "SHORT PASS!"
 
@@ -522,5 +531,5 @@ func _continue_tournament() -> void:
 		continue_button.text = "PLAY CUP AGAIN"
 		round_index = -1
 	else:
-		_start_round()
 		opponent_name = TEAM_NAMES[(round_index + 1) % TEAM_NAMES.size()]
+		_start_round()
