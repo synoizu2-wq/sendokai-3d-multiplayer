@@ -12,14 +12,38 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Build Android APK with Godot 4.4
+      - name: Create temporary Android debug signing key
         run: |
           mkdir -p build
+          keytool -genkeypair -v \
+            -keystore "$PWD/build/debug.keystore" \
+            -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Build signed Android APK with Godot 4.4
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /project/build/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
           docker run --rm \
+            -e GODOT_ANDROID_KEYSTORE_DEBUG_PATH \
+            -e GODOT_ANDROID_KEYSTORE_DEBUG_USER \
+            -e GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD \
             -v "$PWD":/project \
             -w /project \
             barichello/godot-ci:4.4.1 \
             godot --headless --path . --export-debug Android build/Sendokai3DOfflineCup.apk
+
+      - name: Verify APK archive and signature
+        run: |
+          test -s build/Sendokai3DOfflineCup.apk
+          unzip -t build/Sendokai3DOfflineCup.apk
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose build/Sendokai3DOfflineCup.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
