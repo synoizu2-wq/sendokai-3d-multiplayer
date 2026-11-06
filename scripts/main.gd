@@ -1,27 +1,33 @@
 extends Node3D
 
-const PORT := 24567
-const MAX_PLAYERS := 2
 const ARENA_X := 8.0
-const ARENA_Z := 10.0
+const PLAYER_START := Vector3(0, 0, 6)
+const AI_START := Vector3(0, 0, -6)
+const TEAM_NAMES := ["Storm", "Ember", "Nova"]
+const TARGET_SCORE := 3
 
-var is_server := false
 var local_move := Vector2.ZERO
 var shoot_pressed := false
-var player_nodes: Dictionary = {}
-var player_positions: Dictionary = {}
-var input_states: Dictionary = {}
-var shoot_cooldowns: Dictionary = {}
+var player_position := PLAYER_START
+var ai_position := AI_START
 var ball_position := Vector3(0, 0.65, 0)
 var ball_velocity := Vector3.ZERO
 var score := [0, 0]
-var send_timer := 0.0
+var player_cooldown := 0.0
+var ai_cooldown := 0.0
 var match_over := false
+var tournament_over := false
+var round_number := 1
+var current_opponent := "Storm"
+var final_opponent := "Ember"
+var player_won_semifinal := false
 
+var player_node: Node3D
+var ai_node: Node3D
 var status_label: Label
 var score_label: Label
-var ip_field: LineEdit
-var shoot_button: Button
+var tournament_label: Label
+var next_button: Button
 var move_flags := {"left": false, "right": false, "up": false, "down": false}
 
 func _ready() -> void:
@@ -29,22 +35,15 @@ func _ready() -> void:
 	_build_camera()
 	_build_lighting()
 	_build_ball()
+	_build_fighters()
 	_build_hud()
-	_ensure_player(1)
-	player_positions[1] = Vector3(0, 0, 6)
-	status_label.text = "Host a match or join using the host's local IP"
+	_start_match("SEMIFINAL • MATCH 1 OF 2", "Storm")
 
 func _physics_process(delta: float) -> void:
+	if match_over or tournament_over:
+		return
 	_refresh_local_move()
-	if is_server:
-		input_states[1] = {"move": local_move, "shoot": shoot_pressed}
-		_server_step(delta)
-		send_timer += delta
-		if send_timer >= 0.05:
-			send_timer = 0.0
-			_broadcast_snapshot()
-	elif multiplayer.multiplayer_peer != null and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
-		rpc_id(1, "submit_input", local_move, shoot_pressed)
+	_step_match(delta)
 
 func _build_arena() -> void:
 	var floor_mesh := BoxMesh.new()
@@ -58,7 +57,6 @@ func _build_arena() -> void:
 	floor_mat.roughness = 0.55
 	floor.material_override = floor_mat
 	add_child(floor)
-
 	_add_box(Vector3(18, 1.2, 0.35), Vector3(0, 0.4, -10.8), Color(0.12, 0.55, 0.95))
 	_add_box(Vector3(18, 1.2, 0.35), Vector3(0, 0.4, 10.8), Color(0.95, 0.35, 0.18))
 	_add_box(Vector3(0.18, 0.03, 20), Vector3(0, 0.0, 0), Color(0.25, 0.75, 1.0))
@@ -98,7 +96,6 @@ func _build_lighting() -> void:
 	env.ambient_light_energy = 0.8
 	world.environment = env
 	add_child(world)
-
 	var light := DirectionalLight3D.new()
 	light.rotation_degrees = Vector3(-55, -25, 0)
 	light.light_energy = 1.35
@@ -120,14 +117,9 @@ func _build_ball() -> void:
 	orb.position = ball_position
 	add_child(orb)
 
-func _ensure_player(peer_id: int) -> void:
-	if player_nodes.has(peer_id):
-		return
+func _make_fighter(display_name: String, body_color: Color) -> Node3D:
 	var body := Node3D.new()
-	body.name = "Player_%s" % peer_id
-	var is_blue := peer_id % 2 == 1
-	var body_color := Color(0.12, 0.65, 1.0) if is_blue else Color(1.0, 0.35, 0.18)
-
+	body.name = display_name
 	var torso := MeshInstance3D.new()
 	var capsule := CapsuleMesh.new()
 	capsule.radius = 0.48
@@ -139,7 +131,6 @@ func _ensure_player(peer_id: int) -> void:
 	torso_mat.metallic = 0.22
 	torso.material_override = torso_mat
 	body.add_child(torso)
-
 	var head := MeshInstance3D.new()
 	var head_mesh := SphereMesh.new()
 	head_mesh.radius = 0.38
@@ -150,7 +141,6 @@ func _ensure_player(peer_id: int) -> void:
 	head_mat.albedo_color = Color(0.88, 0.72, 0.57)
 	head.material_override = head_mat
 	body.add_child(head)
-
 	var aura := MeshInstance3D.new()
 	var aura_mesh := SphereMesh.new()
 	aura_mesh.radius = 0.62
@@ -165,12 +155,14 @@ func _ensure_player(peer_id: int) -> void:
 	aura_mat.emission_energy_multiplier = 0.55
 	aura.material_override = aura_mat
 	body.add_child(aura)
-
 	add_child(body)
-	player_nodes[peer_id] = body
-	player_positions[peer_id] = Vector3(0, 0, 6 if peer_id % 2 == 1 else -6)
-	body.position = player_positions[peer_id]
-	shoot_cooldowns[peer_id] = 0.0
+	return body
+
+func _build_fighters() -> void:
+	player_node = _make_fighter("Player", Color(0.12, 0.65, 1.0))
+	ai_node = _make_fighter("CPU", Color(1.0, 0.35, 0.18))
+	player_node.position = player_position
+	ai_node.position = ai_position
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -179,51 +171,49 @@ func _build_hud() -> void:
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(root)
 
+	tournament_label = Label.new()
+	tournament_label.position = Vector2(18, 12)
+	tournament_label.size = Vector2(560, 36)
+	tournament_label.add_theme_font_size_override("font_size", 22)
+	tournament_label.add_theme_color_override("font_color", Color(1.0, 0.82, 0.35))
+	root.add_child(tournament_label)
+
 	score_label = Label.new()
-	score_label.position = Vector2(520, 14)
+	score_label.position = Vector2(520, 48)
 	score_label.size = Vector2(240, 55)
 	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	score_label.add_theme_font_size_override("font_size", 34)
+	score_label.add_theme_font_size_override("font_size", 36)
 	score_label.add_theme_color_override("font_color", Color(0.65, 0.9, 1.0))
 	score_label.text = "0  :  0"
 	root.add_child(score_label)
 
 	status_label = Label.new()
-	status_label.position = Vector2(18, 16)
-	status_label.size = Vector2(470, 34)
+	status_label.position = Vector2(18, 52)
+	status_label.size = Vector2(470, 38)
 	status_label.add_theme_font_size_override("font_size", 17)
 	status_label.add_theme_color_override("font_color", Color.WHITE)
 	root.add_child(status_label)
-
-	ip_field = LineEdit.new()
-	ip_field.position = Vector2(18, 58)
-	ip_field.size = Vector2(190, 42)
-	ip_field.placeholder_text = "Host IP (e.g. 192.168.1.5)"
-	ip_field.text = "127.0.0.1"
-	root.add_child(ip_field)
-
-	var host_btn := _make_button("HOST", Vector2(218, 58), Vector2(100, 42))
-	host_btn.pressed.connect(_host_game)
-	root.add_child(host_btn)
-	var join_btn := _make_button("JOIN", Vector2(326, 58), Vector2(100, 42))
-	join_btn.pressed.connect(_join_game)
-	root.add_child(join_btn)
 
 	_add_control_button(root, "◀", Vector2(34, 560), "left")
 	_add_control_button(root, "▶", Vector2(150, 560), "right")
 	_add_control_button(root, "▲", Vector2(92, 500), "up")
 	_add_control_button(root, "▼", Vector2(92, 620), "down")
 
-	shoot_button = _make_button("ENERGY!", Vector2(1040, 535), Vector2(190, 110))
+	var shoot_button := _make_button("ENERGY!", Vector2(1040, 535), Vector2(190, 110))
 	shoot_button.add_theme_font_size_override("font_size", 25)
 	shoot_button.button_down.connect(func(): shoot_pressed = true)
 	shoot_button.button_up.connect(func(): shoot_pressed = false)
 	root.add_child(shoot_button)
 
+	next_button = _make_button("CONTINUE", Vector2(520, 625), Vector2(240, 58))
+	next_button.visible = false
+	next_button.pressed.connect(_continue_tournament)
+	root.add_child(next_button)
+
 	var help := Label.new()
 	help.position = Vector2(18, 112)
-	help.size = Vector2(440, 30)
-	help.text = "Move with arrows • Hold ENERGY! near the ball to strike"
+	help.size = Vector2(500, 30)
+	help.text = "OFFLINE CUP • Move with arrows • Hold ENERGY! near the ball"
 	help.add_theme_font_size_override("font_size", 14)
 	help.add_theme_color_override("font_color", Color(0.75, 0.83, 1.0))
 	root.add_child(help)
@@ -247,86 +237,34 @@ func _refresh_local_move() -> void:
 	var y := float(move_flags["down"]) - float(move_flags["up"])
 	local_move = Vector2(x, y).normalized()
 
-func _host_game() -> void:
-	var peer := ENetMultiplayerPeer.new()
-	var error := peer.create_server(PORT, MAX_PLAYERS - 1)
-	if error != OK:
-		status_label.text = "Could not host: error %s" % error
-		return
-	multiplayer.multiplayer_peer = peer
-	is_server = true
-	_ensure_player(1)
-	player_positions[1] = Vector3(0, 0, 6)
-	var local_ip := _get_local_ip()
-	status_label.text = "HOST: %s:%s • Share this with player 2" % [local_ip, PORT]
-	multiplayer.peer_connected.connect(_on_peer_connected)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+func _step_match(delta: float) -> void:
+	player_cooldown = maxf(0.0, player_cooldown - delta)
+	ai_cooldown = maxf(0.0, ai_cooldown - delta)
 
-func _get_local_ip() -> String:
-	for address in IP.get_local_addresses():
-		if address.contains(".") and not address.begins_with("127."):
-			return address
-	return "Check Wi-Fi IP in Android settings"
+	player_position.x += local_move.x * 6.0 * delta
+	player_position.z += local_move.y * 6.0 * delta
+	player_position.x = clampf(player_position.x, -7.2, 7.2)
+	player_position.z = clampf(player_position.z, 1.2, 9.0)
 
-func _join_game() -> void:
-	var address := ip_field.text.strip_edges()
-	if address.is_empty():
-		status_label.text = "Enter the host IP first"
-		return
-	var peer := ENetMultiplayerPeer.new()
-	var error := peer.create_client(address, PORT)
-	if error != OK:
-		status_label.text = "Could not join: error %s" % error
-		return
-	multiplayer.multiplayer_peer = peer
-	is_server = false
-	status_label.text = "Connecting to %s..." % address
-	multiplayer.connected_to_server.connect(func():
-		_ensure_player(multiplayer.get_unique_id())
-		status_label.text = "Connected • Match started"
-	)
-	multiplayer.connection_failed.connect(func(): status_label.text = "Connection failed")
-	multiplayer.server_disconnected.connect(func(): status_label.text = "Host disconnected")
+	var to_ball := Vector2(ball_position.x - ai_position.x, ball_position.z - ai_position.z)
+	var ai_move := to_ball.normalized()
+	if to_ball.length() > 1.0:
+		ai_position.x += ai_move.x * 4.0 * delta
+		ai_position.z += ai_move.y * 4.0 * delta
+	ai_position.x = clampf(ai_position.x, -7.2, 7.2)
+	ai_position.z = clampf(ai_position.z, -9.0, -1.2)
 
-func _on_peer_connected(peer_id: int) -> void:
-	_ensure_player(peer_id)
-	player_positions[peer_id] = Vector3(0, 0, -6)
-	input_states[peer_id] = {"move": Vector2.ZERO, "shoot": false}
-	status_label.text = "Opponent connected • First to 3 points wins"
+	if shoot_pressed and player_cooldown <= 0.0 and player_position.distance_to(ball_position) < 3.8:
+		var aim := Vector3(0, 0, -1)
+		aim.x = clampf((ball_position.x - player_position.x) * 0.35, -0.55, 0.55)
+		ball_velocity = aim.normalized() * 14.0
+		player_cooldown = 0.6
 
-func _on_peer_disconnected(peer_id: int) -> void:
-	if player_nodes.has(peer_id):
-		player_nodes[peer_id].queue_free()
-		player_nodes.erase(peer_id)
-	player_positions.erase(peer_id)
-	input_states.erase(peer_id)
-
-@rpc("any_peer", "call_remote", "unreliable_ordered")
-func submit_input(move: Vector2, shoot: bool) -> void:
-	if not is_server:
-		return
-	var sender := multiplayer.get_remote_sender_id()
-	input_states[sender] = {"move": move.limit_length(1.0), "shoot": shoot}
-
-func _server_step(delta: float) -> void:
-	if match_over:
-		return
-	for peer_id in player_positions.keys():
-		_ensure_player(int(peer_id))
-		var state: Dictionary = input_states.get(peer_id, {"move": Vector2.ZERO, "shoot": false})
-		var movement: Vector2 = state.get("move", Vector2.ZERO)
-		var pos: Vector3 = player_positions[peer_id]
-		pos.x += movement.x * 6.0 * delta
-		pos.z += movement.y * 6.0 * delta
-		pos.x = clampf(pos.x, -7.2, 7.2)
-		pos.z = clampf(pos.z, -9.0, 9.0)
-		player_positions[peer_id] = pos
-		shoot_cooldowns[peer_id] = maxf(0.0, float(shoot_cooldowns.get(peer_id, 0.0)) - delta)
-		if bool(state.get("shoot", false)) and shoot_cooldowns[peer_id] <= 0.0:
-			if pos.distance_to(ball_position) < 4.2:
-				var direction := Vector3(0, 0, -1 if pos.z > 0 else 1)
-				ball_velocity = direction * 13.0 + Vector3(signf(pos.x - ball_position.x) * 1.5, 0, 0)
-				shoot_cooldowns[peer_id] = 0.65
+	if ai_cooldown <= 0.0 and ai_position.distance_to(ball_position) < 3.5:
+		var aim_ai := Vector3(0, 0, 1)
+		aim_ai.x = clampf((ball_position.x - ai_position.x) * 0.35, -0.55, 0.55)
+		ball_velocity = aim_ai.normalized() * 11.0
+		ai_cooldown = 1.0
 
 	ball_position += ball_velocity * delta
 	ball_velocity *= pow(0.985, delta * 60.0)
@@ -340,39 +278,64 @@ func _server_step(delta: float) -> void:
 		score[1] += 1
 		_reset_ball()
 
-	for peer_id in player_nodes.keys():
-		player_nodes[peer_id].position = player_positions.get(peer_id, Vector3.ZERO)
+	player_node.position = player_position
+	ai_node.position = ai_position
 	var orb := get_node_or_null("EnergyBall") as MeshInstance3D
 	if orb:
 		orb.position = ball_position
 	score_label.text = "%s  :  %s" % [score[0], score[1]]
-	if score[0] >= 3 or score[1] >= 3:
-		match_over = true
-		status_label.text = "BLUE TEAM WINS!" if score[0] >= 3 else "RED TEAM WINS!"
+	if score[0] >= TARGET_SCORE or score[1] >= TARGET_SCORE:
+		_finish_match()
 
 func _reset_ball() -> void:
 	ball_position = Vector3(0, 0.65, 0)
 	ball_velocity = Vector3.ZERO
+	player_position = PLAYER_START
+	ai_position = AI_START
+	player_node.position = player_position
+	ai_node.position = ai_position
 
-func _broadcast_snapshot() -> void:
-	var positions: Dictionary = {}
-	for peer_id in player_positions.keys():
-		positions[int(peer_id)] = player_positions[peer_id]
-	rpc("receive_snapshot", positions, ball_position, score[0], score[1])
+func _start_match(round_title: String, opponent: String) -> void:
+	current_opponent = opponent
+	score = [0, 0]
+	match_over = false
+	shoot_pressed = false
+	player_cooldown = 0.0
+	ai_cooldown = 0.0
+	_reset_ball()
+	score_label.text = "0  :  0"
+	status_label.text = "YOU vs %s • First to %s points" % [current_opponent, TARGET_SCORE]
+	tournament_label.text = "OFFLINE CUP  •  " + round_title
+	next_button.visible = false
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func receive_snapshot(positions: Dictionary, orb_pos: Vector3, blue_score: int, red_score: int) -> void:
-	for key in positions.keys():
-		var peer_id := int(key)
-		_ensure_player(peer_id)
-		player_positions[peer_id] = positions[key]
-		player_nodes[peer_id].position = positions[key]
-	ball_position = orb_pos
-	var orb := get_node_or_null("EnergyBall") as MeshInstance3D
-	if orb:
-		orb.position = orb_pos
-	score_label.text = "%s  :  %s" % [blue_score, red_score]
-	if blue_score >= 3:
-		status_label.text = "BLUE TEAM WINS!"
-	elif red_score >= 3:
-		status_label.text = "RED TEAM WINS!"
+func _finish_match() -> void:
+	match_over = true
+	if score[0] > score[1]:
+		status_label.text = "YOU DEFEATED %s!" % current_opponent.to_upper()
+		if round_number == 1:
+			player_won_semifinal = true
+			next_button.text = "PLAY THE FINAL"
+			next_button.visible = true
+		else:
+			tournament_over = true
+			tournament_label.text = "OFFLINE CUP  •  CHAMPION!"
+			status_label.text = "YOU ARE THE CUP CHAMPION! 🏆"
+			next_button.text = "PLAY AGAIN"
+			next_button.visible = true
+	else:
+		tournament_over = true
+		tournament_label.text = "OFFLINE CUP  •  ELIMINATED"
+		status_label.text = "TOURNAMENT OVER • %s WON" % current_opponent.to_upper()
+		next_button.text = "TRY AGAIN"
+		next_button.visible = true
+
+func _continue_tournament() -> void:
+	if tournament_over:
+		round_number = 1
+		tournament_over = false
+		player_won_semifinal = false
+		_start_match("SEMIFINAL • MATCH 1 OF 2", "Storm")
+		return
+	if round_number == 1 and player_won_semifinal:
+		round_number = 2
+		_start_match("GRAND FINAL • MATCH 2 OF 2", final_opponent)
