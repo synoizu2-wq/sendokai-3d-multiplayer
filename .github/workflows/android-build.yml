@@ -1,0 +1,30 @@
+name: Build Sendokai Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build Android APK with Godot 4.4
+        run: |
+          mkdir -p build
+          docker run --rm \
+            -v "$PWD":/project \
+            -w /project \
+            barichello/godot-ci:4.4.1 \
+            godot --headless --path . --export-debug Android build/Sendokai3DPrototype.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sendokai3DPrototype-Android-APK
+          path: build/Sendokai3DPrototype.apk
+          if-no-files-found: error
+          retention-days: 14
